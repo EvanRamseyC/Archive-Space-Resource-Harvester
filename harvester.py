@@ -1,13 +1,13 @@
 # Import the following libraries
+import os
 import requests
 from concurrent.futures import ThreadPoolExecutor
 import openpyxl
 
 
 def scope_of_search(range_tuple):
-    # answer = input(f'Do you want to renew from a previous file that did not complete. Y/N?\n')
-    answer = 'N'
-    if answer == 'N':
+    answer = input(f'Do you want to renew from a previous file that did not complete. Y/N?\n').lower()
+    if answer == 'n':
         start = int(input(f'Where do you want to start between {range_tuple[0]} and {range_tuple[1]}?\n'))
         end = int(input(f'Where do you want to end between {range_tuple[0]} and {range_tuple[1]}?\n'))
         if end > range_tuple[1]:
@@ -17,6 +17,55 @@ def scope_of_search(range_tuple):
             print(f'You cannot start at {start} because the lowest index is {range_tuple[0]}')
             start = range_tuple[0]
         return start, end
+    elif answer == 'y':
+        workbook, book_name = where_is_file()
+        return workbook, book_name
+    else:
+        exit()
+
+
+def where_is_file():
+    # This function finds the file that you want to write to.
+    file_name = input(f'What is the name of the file you want to continue? Include .xlsx\n')
+    workbook, file_found = find_file(file_name)
+    if file_found is False:
+        f_path = input("Please input the directory the file is in. Enter 'exit' to quit.\n")
+        if f_path == 'exit':
+            exit()
+        elif os.path.exists(f_path):
+            os.chdir(f_path)
+            workbook, file_found = find_file(file_name)
+            if file_found is False:
+                print(f'Could not find the file {file_name} in {f_path}')
+                exit()
+    elif file_found is True:
+        return workbook, file_name
+
+
+def find_file(file_name):
+    try:
+        wb = openpyxl.load_workbook(f'{file_name}')
+        if "ArchiveSpace Data" and "Log" in wb.sheetnames:
+            print(f'Found the file {file_name}')
+            return wb, True
+        else:
+            print("The file you entered needs the sheets, 'ArchiveSpace Data' and 'Log' to continue.")
+            exit()
+    except FileNotFoundError:
+        print(f'Could not find the file {file_name}')
+        return False, False
+
+
+def load_file(wb):
+    sheet = wb['Log']
+    start, end, last_left = sheet['A2'].value, sheet['B2'].value, sheet['B3'].value
+    sheet = wb['ArchiveSpace Data']
+    for row in sheet.iter_rows(min_row=1, max_row=sheet.max_row, values_only=True):
+        if not row[0]:
+            row = row.row
+            print(row)
+            return last_left, end, row
+
 
 
 def resource_title(resource_record):
@@ -45,7 +94,8 @@ def json_writer(current_record, parent, resource_number):
     bio_hist = []
     new_uri = reformat_uri(current_record['uri'])
     # The uri needs to be changed to FSU's uri format.
-    child_dict = {'title': current_record['title'], 'parent_resource': parent,
+    title = current_record.get('title', current_record.get('display_string', 'No title'))
+    child_dict = {'title': title, 'parent_resource': parent,
                   'uri': f'https://sandbox.archivesspace.org/staff/resources/{resource_number}{new_uri}'}
     for date_instance in current_record['dates']:
         if 'expression' in date_instance.keys():
@@ -83,10 +133,11 @@ def json_writer(current_record, parent, resource_number):
 
 
 # Writes archival objects without children to json
-def json_request_maker(no_child_list, parent, resource_number):
+def json_request_maker(no_child_list, parent, resource_number, baseURL, headers):
     dict_list = []
     with ThreadPoolExecutor(max_workers=50) as pool:
-        results = list(pool.map(no_children_request, no_child_list))
+        results = list(pool.map(no_children_request, no_child_list, [baseURL] * len(no_child_list),
+                                [headers] * len(no_child_list)))
     for json in results:
         data = json_writer(json, parent, resource_number)
         if data is not False:
@@ -95,8 +146,9 @@ def json_request_maker(no_child_list, parent, resource_number):
 
 
 # Gets json files for all objects under the resource and the resource
-def no_children_request(no_child_uri):
+def no_children_request(no_child_uri, baseURL, headers):
     json_request = requests.get(baseURL + no_child_uri, headers=headers).json()
+    # print(json_request['uri'])
     return json_request
 
 
@@ -111,21 +163,22 @@ def uri_adder(previous_uris, uri_to_be_added):
         return updated_uris
 
 
-def one_level_down(children_list):
-    children_tree = arch_obj_tree(children_list)
-    children_filter = children_object_filer(children_list, children_tree)
+def one_level_down(children_uri, baseURL, headers, resource_uri):
+    children_tree = arch_obj_tree(children_uri, baseURL, headers, resource_uri)
+    children_filter = children_object_filer(children_uri, children_tree)
     final_uris = []
     if len(children_filter[0]) > 0:
         final_uris = children_filter[0]
     if len(children_filter[1]) > 0:
         final_uris.extend(children_filter[1])
         for x in range(len(children_filter[1])):
-            uris = one_level_down((children_filter[1][x]))
+            uris = one_level_down((children_filter[1][x]), baseURL, headers, resource_uri)
             final_uris.extend(uris)
+    # print(f'Final URIs: {final_uris}')
     return final_uris
 
 
-def direct_children(parent_resource, parent_resource_uri, parent):
+def direct_children(parent_resource, parent_resource_uri, parent, baseURL, headers, resource_uri):
     children_list = []
     all_objects = [parent_resource_uri]
     parent_resource_number = parent_resource_uri.split("resources/")[-1]
@@ -137,17 +190,16 @@ def direct_children(parent_resource, parent_resource_uri, parent):
             else:
                 all_objects.append(parent_resource['precomputed_waypoints'][""]["0"][x]['uri'])
         for x in range(len(children_list)):
-            uris = one_level_down(children_list[x])
+            uris = one_level_down(children_list[x], baseURL, headers, resource_uri)
             added_uris = uri_adder(all_objects, uris)
-            if added_uris is not None:
-                all_objects.extend(added_uris)
-    data = json_request_maker(all_objects, parent, parent_resource_number)
+            all_objects = added_uris
+    data = json_request_maker(all_objects, parent, parent_resource_number, baseURL, headers)
     return data
 
 
 # The request to get the tree to archival objects. This will not work unless you are requesting data from an archival
 # object
-def arch_obj_tree(uri):
+def arch_obj_tree(uri, baseURL, headers, resource_uri):
     tree = requests.get(baseURL + resource_uri + "/tree/node?node_uri=" + uri, headers=headers).json()
     return tree
 
@@ -167,15 +219,32 @@ def children_object_filer(parent_uri, g_current_record):
 
 
 # Gets uri of archival object
-def child_request(uri_list):
-    grandchild_tree = arch_obj_tree(uri_list)
+def child_request(uri_list, baseURL, headers, resource_uri):
+    grandchild_tree = arch_obj_tree(uri_list, baseURL, headers, resource_uri)
     return grandchild_tree
 
 
 # Goes further into the archival object tree
-def heiarchy_delver(child_list):
-    uri_list = one_level_down(child_list)
+def heiarchy_delver(child_list, baseURL, headers, resource_uri):
+    uri_list = one_level_down(child_list, baseURL, headers, resource_uri)
     return uri_list
+
+
+def create_workbook(start, end):
+    workbook = openpyxl.Workbook()
+    worksheet = workbook.active
+    worksheet.title = 'ArchiveSpace Data'
+    workbook.create_sheet("Log")
+    create_sheet_headers(worksheet)
+    name = f'ArchiveSpace Data({start}-{end}).xlsx'
+    worksheet = workbook['Log']
+    worksheet['A1'] = 'Start Index'
+    worksheet['A2'] = start
+    worksheet['A3'] = 'Current index'
+    worksheet['B1'] = 'End Index'
+    worksheet['B2'] = end
+    workbook.save(name)
+    return workbook, name
 
 
 def create_sheet_headers(sheet):
@@ -232,64 +301,76 @@ def input_data_to_excel(sheet, book, resource_and_objects_dict, row, book_name):
 
 
 def update_sheet_log(sheet, idex, book, book_name):
-    sheet['B1'] = idex
+    sheet['B3'] = idex
     book.save(book_name)
     return
 
 
-# Your authentication. Replace all of this with your institution's information. This is the authentication for
-# ArchiveSpace's public sandbox
-baseURL = 'https://sandbox.archivesspace.org/staff/api'
-user = 'admin'
-password = 'admin'
-auth = requests.post('https://sandbox.archivesspace.org/staff/api/users/admin/login?password=admin').json()
+def auth():
+    # Your authentication. Replace all of this with your institution's information. This is the authentication for
+    # ArchiveSpace's public sandbox
+    auth_baseURL = 'https://sandbox.archivesspace.org/staff/api'
+    user = 'admin'
+    password = 'admin'
+    authentication = requests.post(f'https://sandbox.archivesspace.org/staff/api/users/{user}'
+                                   f'/login?password={password}').json()
 
-# Do not change any of this.
-session = auth['session']
-headers = {'X-ArchivesSpace-Session': session, 'Content_Type': 'application/json'}
-print('Your session key is: ' + session)
-
-# Finds all resources in a repository. You can see what repository you want to work with when you click any object in it
-# Then in basic information, it tells you its uri. The number after repositories is the one you want to work with.
-repository = '2'
-endpoint = '/repositories/' + repository + '/find_by_id/resources'
-resource_id = requests.get(baseURL + f"/repositories/{repository}/resources?all_ids=true", headers=headers).json()
-
-# Gets range of all resources
-lowest_index = min(range(len(resource_id)))
-highest_index = max(range(len(resource_id)))
-indices_tuple = (lowest_index, highest_index)
-print(indices_tuple)
-print(f'You have {len(resource_id)} resources in this repository '
-      f'starting from {indices_tuple[0]} to {indices_tuple[1]}')
+    # Do not change any of this.
+    session = authentication['session']
+    s_headers = {'X-ArchivesSpace-Session': session, 'Content_Type': 'application/json'}
+    print('Your session key is: ' + session)
+    repos = '2'
+    return auth_baseURL, s_headers, repos
 
 
-# Creates workbook to put data in.
-workbook = openpyxl.Workbook()
-worksheet = workbook.active
-worksheet.title = 'ArchiveSpace Data'
-workbook.create_sheet("Log")
-create_sheet_headers(worksheet)
-row_keeper = 2
-workbook_name = 'ArchiveSpace Data.xlsx'
-resource_start, resource_end = scope_of_search(indices_tuple)
-# Goes through each resource, looking at all of their children and putting it on an Excel spreadsheet.
-for i in range(resource_start, resource_end):
-    resource_uri = f'/repositories/{repository}/resources/{resource_id[i]}'
-    endpoint = f'{resource_uri}/tree/root'
-    output = requests.get(baseURL + endpoint, headers=headers).json()
-    resource = resource_title(output)
+def main():
+    baseURL, headers, repository = auth()
+    resource_id = requests.get(baseURL + f"/repositories/{repository}/resources?all_ids=true", headers=headers).json()
+    # Gets range of all resources
+    lowest_index = min(range(len(resource_id)))
+    highest_index = max(range(len(resource_id)))
+    indices_tuple = (lowest_index, highest_index)
+    print(indices_tuple)
+    print(f'You have {len(resource_id)} resources in this repository '
+          f'starting from {indices_tuple[0]} to {indices_tuple[1]}')
 
-    # Finds information for top level data and children
-    children = direct_children(output, resource['uri'], resource['title'])
-    json_dict = children
+    search_range = scope_of_search(indices_tuple)
 
-    # Adds data to Excel spreadsheet
-    worksheet = workbook["ArchiveSpace Data"]
-    row_keeper = input_data_to_excel(worksheet, workbook, json_dict, row_keeper, workbook_name)
-    worksheet = workbook["Log"]
-    update_sheet_log(worksheet, i, workbook, workbook_name)
+    # Create workbook
+    if type(search_range[0]) == int:
+        resource_start = search_range[0]
+        resource_end = search_range[1]
+        workbook, workbook_name = create_workbook(resource_start, resource_end)
+        row_keeper = 2
+    else:
+        workbook, workbook_name = search_range
+        print(search_range[0])
+        resource_start, resource_end, row_keeper = load_file(search_range[0])
 
-worksheet['A2'] = 'All resources in this range are done'
-workbook.save(workbook_name)
-print('Done')
+
+    # Goes through each resource, looking at all of their children and putting it on an Excel spreadsheet.
+    for i in range(resource_start, resource_end + 1):
+        resource_uri = f'/repositories/{repository}/resources/{resource_id[i]}'
+        endpoint = f'{resource_uri}/tree/root'
+        output = requests.get(baseURL + endpoint, headers=headers).json()
+        resource = resource_title(output)
+
+        # Finds information for top level data and children
+        children = direct_children(output, resource['uri'], resource['title'], baseURL, headers, resource_uri)
+        json_dict = children
+
+        # Adds data to Excel spreadsheet
+        worksheet = workbook["ArchiveSpace Data"]
+        row_keeper = input_data_to_excel(worksheet, workbook, json_dict, row_keeper, workbook_name)
+        worksheet = workbook["Log"]
+        update_sheet_log(worksheet, i, workbook, workbook_name)
+
+    worksheet['A5'] = 'All resources in this range are done'
+    workbook.save(workbook_name)
+    print('Done')
+    return
+
+
+if __name__ == '__main__':
+    main()
+
