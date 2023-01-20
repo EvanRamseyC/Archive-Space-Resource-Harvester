@@ -38,13 +38,13 @@ def where_is_file():
             if file_found is False:
                 print(f'Could not find the file {file_name} in {f_path}')
                 exit()
-    elif file_found is True:
+    if file_found is True:
         return workbook, file_name
 
 
 def find_file(file_name):
     try:
-        wb = openpyxl.load_workbook(f'{file_name}')
+        wb = openpyxl.load_workbook(file_name)
         if "ArchiveSpace Data" and "Log" in wb.sheetnames:
             print(f'Found the file {file_name}')
             return wb, True
@@ -60,11 +60,8 @@ def load_file(wb):
     sheet = wb['Log']
     start, end, last_left = sheet['A2'].value, sheet['B2'].value, sheet['B3'].value
     sheet = wb['ArchiveSpace Data']
-    for row in sheet.iter_rows(min_row=1, max_row=sheet.max_row, values_only=True):
-        if not row[0]:
-            row = row.row
-            print(row)
-            return last_left, end, row
+    row = sheet.max_row + 1
+    return last_left, end, row
 
 
 
@@ -344,8 +341,7 @@ def main():
         row_keeper = 2
     else:
         workbook, workbook_name = search_range
-        print(search_range[0])
-        resource_start, resource_end, row_keeper = load_file(search_range[0])
+        resource_start, resource_end, row_keeper = load_file(workbook)
 
 
     # Goes through each resource, looking at all of their children and putting it on an Excel spreadsheet.
@@ -373,4 +369,3 @@ def main():
 
 if __name__ == '__main__':
     main()
-
