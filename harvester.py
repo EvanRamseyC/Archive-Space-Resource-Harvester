@@ -82,7 +82,7 @@ def reformat_uri(object_uri):
     return
 
 
-def json_writer(current_record, parent, resource_number):
+def json_writer(current_record, parent, resource_number, base_url, headers):
     date_expression = []
     begin_date = []
     end_date = []
@@ -109,7 +109,11 @@ def json_writer(current_record, parent, resource_number):
     child_dict['end date'] = end_date
 
     if len(current_record['subjects']) > 0:
-        child_dict['subjects'] = current_record['subjects']
+        subjects = []
+        for subject in current_record['subjects']:
+            subjects.append(subject['ref'])
+        subjects = linked_data_name(subjects, base_url, headers)
+        child_dict['subjects'] = subjects
     if len(current_record['notes']) > 0:
         notes = current_record['notes']
         for note in notes:
@@ -125,7 +129,11 @@ def json_writer(current_record, parent, resource_number):
                 abstract.append(note['content'])
             child_dict['abstract'] = scopecontents
     if len(current_record['linked_agents']) > 0:
-        child_dict['people'] = current_record['linked_agents']
+        persons = []
+        for person in current_record['linked_agents']:
+            persons.append(person['ref'])
+        persons = linked_data_name(persons, base_url, headers)
+        child_dict['people'] = persons
     return child_dict
 
 
@@ -136,10 +144,19 @@ def json_request_maker(no_child_list, parent, resource_number, baseURL, headers)
         results = list(pool.map(no_children_request, no_child_list, [baseURL] * len(no_child_list),
                                 [headers] * len(no_child_list)))
     for json in results:
-        data = json_writer(json, parent, resource_number)
+        data = json_writer(json, parent, resource_number, baseURL, headers)
         if data is not False:
             dict_list.append(data)
     return dict_list
+
+
+def linked_data_name(subject_uris, baseURL, headers):
+    subject_names = []
+    for subject_uri in subject_uris:
+        subject_request = requests.get(baseURL + subject_uri, headers=headers).json()
+        subject_names.append(subject_request['title'])
+    print(subject_names)
+    return subject_names
 
 
 # Gets json files for all objects under the resource and the resource
@@ -283,7 +300,7 @@ def input_data_to_excel(sheet, book, resource_and_objects_dict, row, book_name):
         if 'end date' in info.keys() and len(info['end date']) > 0:
             sheet.cell(row=row, column=end_date).value = strip_brackets(str(info['end date']))
         if 'subjects' in info.keys() and len(info['subjects']) > 0:
-            sheet.cell(row=row, column=subject).value = strip_brackets(str(info['subject']))
+            sheet.cell(row=row, column=subject).value = strip_brackets(str(info['subjects']))
         if 'names' in info.keys() and len(info['names']) > 0:
             sheet.cell(row=row, column=names).value = strip_brackets(str(info['names']))
         if 'bio_hist' in info.keys() and len(info['bio_hist']) > 0:
